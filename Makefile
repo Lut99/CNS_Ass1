@@ -36,9 +36,9 @@ $(OBJ): $(BIN)
 
 # Normal guessword
 $(OBJ)/guessword.o: $(SRC)/guessword.c | $(OBJ)
-	$(GCC) $(GCC_ARGS) -o $@ $<
+	$(GCC) $(GCC_ARGS) -o $@ -c $<
 $(BIN)/guessword.out: $(OBJ)/guessword.o | $(BIN)
-	$(GCC) $(GCC_ARGS) -o $@ $^
+	$(GCC) $(GCC_ARGS) -pthread -o $@ $^ -lcrypt -lpthread
 guessword: $(BIN)/guessword.out
 
 # Guessword using the assignment's requirements

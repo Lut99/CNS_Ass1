@@ -4,7 +4,7 @@
  * Created:
  *   02/09/2020, 20:34:28
  * Last edited:
- *   9/4/2020, 12:36:57 PM
+ *   04/09/2020, 18:30:55
  * Auto updated?
  *   Yes
  *
@@ -19,16 +19,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <crypt.h>
 
 
 /***** MACROS *****/
 
-/* Allows the user to index the one-dimensional array in a Passwords-struct as if it were 2-dimension. */
-#define INDEX(PWDS, Y, X) \
-    ((PWDS)->data[(Y) * (MAX_PASSWORD_LENGTH + 1) + (X)])
-/* Allows the user to get a char* from a single password in a Passwords-struct. */
-#define GET_PWD(PWDS, Y) \
-    ((PWDS)->data + (Y) * (MAX_PASSWORD_LENGTH + 1))
+/* Allows the user to get an character array from a multidimensional array in an Array-struct. */
+#define GET_CHAR(ARR, Y) \
+    ((ARR)->data + (Y) * ((ARR)->max_size + 1))
 
 
 
@@ -36,8 +34,16 @@
 
 /* Determines the maximum number of passwords stored in memory. */
 #define MAX_PASSWORDS 10000000
-/* Determines the maximum length of a single password. */
-#define MAX_PASSWORD_LENGTH 128
+/* Determines the maximum length of a single password (including null-termination). */
+#define MAX_PASSWORD_LENGTH 64
+/* Determines the maximum number of salts loaded in memory at a time. */
+#define MAX_SALTS 128
+/* Determines the maximum number of characters a salt can exist of (including null-termination). */
+#define MAX_SALT_LENGTH 3
+/* Determines the maximum number of users loaded in memory. */
+#define MAX_USERS 10000
+/* Determines the maximum number of characters allowed in a username (including null-termination). */
+#define MAX_USERNAME_LENGTH 7
 /* Determines the chunk size for reading a file. */
 #define CHUNK_SIZE 512
 /* The path of the Dictionary file. */
@@ -50,119 +56,162 @@
 /* The ParseState-enum determines what part of the User struct we're trying to parse right now. */
 typedef enum PARSESTATE {
     username,
+    salt,
     hash,
-    salt
+    done
 } ParseState;
 
 
 
 /***** STRUCTS *****/
 
-/* The Passwords-struct, which contains a pointer to the list of passwords and the number of passwords. */
-typedef struct PASSWORDS {
+/* The Array-struct, which contains a pointer to the a list of char arrays. */
+typedef struct ARRAY {
     char* data;
     int size;
-} Passwords;
-
-/* The Extended-File struct, which contains a FILE and a pre-allocated read buffer to prevent unnecessary allocs. */
-typedef struct EFILE {
-    FILE* handle;
-    char* buffer;
-} eFile;
+    int max_size;
+} Array;
 
 /* The User-struct, which contains information on a user (his username, the hash & the matching salt). */
 typedef struct USER {
     char* username;
     char* hash;
-    char* salt;
+    int salt_id;
 } User;
 
 
 
 /***** HELPER FUNCTIONS *****/
 
-/* Reads the given file as if it was a dictionary, and returns a dictionary with size 'sizeof(char) * MAX_PASSWORDS * (MAX_PASSWORD_LENGTH + 1)'. Returns NULL if some error occurred. */
-Passwords* read_passwords(FILE* dictionary) {
-    Passwords* passwords = malloc(sizeof(Passwords) + sizeof(char) * MAX_PASSWORDS * (MAX_PASSWORD_LENGTH + 1));
-    passwords->data = ((char*) passwords) + sizeof(Passwords);
+/* Reads the given file as if it was a dictionary, and returns a Passwords struct with array size 'sizeof(char) * MAX_PASSWORDS * (MAX_PASSWORD_LENGTH + 1)'. Returns NULL if some error occurred. */
+Array* read_passwords(FILE* dictionary) {
+    // Allocate & preparet hte passwords struct
+    Array* passwords = malloc(sizeof(Array) + sizeof(char) * MAX_PASSWORDS * MAX_PASSWORD_LENGTH);
+    passwords->data = ((char*) passwords) + sizeof(Array);
     passwords->size = 0;
-    int password_i = 0;
-    char buff[CHUNK_SIZE];
+    passwords->max_size = MAX_PASSWORDS;
 
     // Loop and read the file
-    int stop = 0;
-    int line = 0;
-    while (!stop && fgets(buff, sizeof(buff), dictionary) != NULL) {
-        for (int i = 0; i < CHUNK_SIZE; i++) {
-            char c = buff[i];
-            if (c == '\n') {
-                line++;
-                
-                // Move to the next password after finishing this one with '\0'
-                INDEX(passwords, passwords->size, password_i) = '\0';
-                passwords->size++;
-                password_i = 0;
-                break;
-            } else if (c != '\0') {
-                // Make sure we're not overflowing
-                if (passwords->size == MAX_PASSWORDS) {
-                    // Number of passwords overflows
-                    fprintf(stderr, "[WARNING] Reading too many passwords from '" DICTIONARY_PATH "', stopping early.\n");
-                    stop = 1;
-                    break;
-                } else if (password_i == MAX_PASSWORD_LENGTH - 1) {
-                    // Length of one password overflows
-                    fprintf(stderr, "[WARNING] Password on line %d is too long, splitting after reading %d characters.\n", line, MAX_PASSWORD_LENGTH);
-                    INDEX(passwords, passwords->size, password_i) = '\0';
-                    passwords->size++;
-                    password_i = 0;
-                    break;
-                } else {
-                    // Otherwise, write that character to the buffer
-                    INDEX(passwords, passwords->size, password_i++) = c;
-                }
-            }
-        }
-    }
+    for (;passwords->size < MAX_PASSWORDS && fgets(GET_PWD(passwords, passwords->size++), MAX_PASSWORD_LENGTH, dictionary) != NULL;) {}
 
-    // If we didn't hit EOF, something must have gone wrong
-    if (!stop && !feof(dictionary)) {
+    // Check if anything illegal occured
+    if (passwords->size < MAX_PASSWORDS && !feof(dictionary)) {
+        // Stopped prematurly; we errored somehow
         free(passwords);
         fprintf(stderr, "[ERROR] Could not read from file '" DICTIONARY_PATH "': %s\n", strerror(errno));
         return NULL;
+    } else if (passwords->size == MAX_PASSWORDS) {
+        // We stopped because of an overflow; reinstate the correct size and continue with the first MAX_PASSWORDS passwords
+        #ifdef DEBUG
+        fprintf(stderr, "[WARNING] Reading too many passwords from '" DICTIONARY_PATH "', stopping early.\n");
+        #endif
+        passwords->size--;
+    } else if (passwords->size > MAX_PASSWORDS) {
+        // Sanity check; shouldn't happen
+        free(passwords);
+        fprintf(stderr, "[ERROR] Got too many passwords from '" DICTIONARY_PATH "'.\n");
+        return NULL;
     }
-
-    // Otherwise, return the passwords
-    return passwords;
-}
-
-/* Reads a single line from a given shadow file, and then parses that to the given User object. Returns 1 if it was successful, 0 if EOF was reached and -1 if an error occured. */
-int get_user(User* user, FILE* handle) {
-    // Try to read whatever is left in the buffer
-    char buffer[CHUNK_SIZE];
-    int buffer_i = 0;
-    if (fgets(buffer, sizeof(buffer), handle) == NULL) {
-        if (feof(handle)) {
-            return 0;
-        } else {
-            fprintf(stderr, "[ERROR] Could not read from shadow file: %s\n", strerror(errno));
-            return -1;
+    
+    // Trim newlines
+    for (int i = 0; i < passwords->size; i++) {
+        for (int j = 0; j < MAX_PASSWORD_LENGTH; j++) {
+            char c = GET_CHAR(passwords, i)[j];
+            if (c == '\n') {
+                GET_CHAR(passwords, i)[j] = '\0';
+                break;
+            }
         }
     }
     
-    // If succesful, we attempt to parse this
-    ParseState state = username;
-    for (int i = 0; i < CHUNK_SIZE; i++) {
-        char c = buffer[i];
-    }
+    // If everything checks out, return the passwords
+    return passwords;
+}
 
+/* Reads a shadow file to memory. Returns a list of User objects that describes each user in the file, and a list of all unique salts used. Return '1' if successful or '0' otherwise. */
+int read_shadow(Array* salts, Array* users, FILE* handle) {
+    // Let's loop through the handle
+    char buffer[CHUNK_SIZE];
+    int line = 0;
+    
+
+    // while (fgets(buffer, CHUNK_SIZE, handle) != NULL) {
+    //     // Loop through the buffer to extract useful information
+    //     ParseState state = username;
+    //     int stop = 0;
+    //     int target_i = 0;
+    //     int dollar_count = 0;
+    //     for (int i = 0; stop == 0 && i < CHUNK_SIZE; i++) {
+    //         char c = buffer[i];
+    //         switch(state) {
+    //             case username:
+    //                 if (c == '\n' || c == '\0') {
+    //                     // We didn't finish the username; skip this user
+    //                     #ifdef DEBUG
+    //                     fprintf(stderr, "[WARNING] Encountered user with only a username on line %d; skipping\n", line);
+    //                     #endif
+                        
+    //                     if (c == '\n') { line++; }
+    //                     stop = 1;
+    //                 } else if (c == ':') {
+    //                     // Add null-termination to the username, then move to the next state
+    //                     ((User*) users->data[users->size])->username[target_i] = '\0';
+    //                     target_i = 0;
+    //                     state = salt;
+    //                 } else {
+    //                     // Add to the username
+    //                     ((User*) users->data[users->size])->username[target_i++] = c;
+    //                 }
+    //                 break;
+    //             case salt:
+    //                 if (c == '\n' || c == '\0') {
+    //                     // We didn't finish the salt; skip this user
+    //                     #ifdef DEBUG
+    //                     fprintf(stderr, "[WARNING] Encountered user with only a username and a salt on line %d; skipping\n", line);
+    //                     #endif
+    //                     if (c == '\n') { line++; }
+    //                     stop = 1;
+    //                 } else if (c == '$') {
+    //                     // Add it to the salt
+    //                     GET_CHAR(salts, salts->size)[target_i++] = c;
+    //                     if (dollar_count++ == 2) {
+    //                         // Finish it with a '\0', and then move to the next state
+    //                         GET_CHAR(salts, salts->size)[target_i] = '\0';
+    //                         target_i = 0;
+    //                         state = hash;
+    //                     }
+    //                 } else {
+    //                     // Add to the salt
+    //                     GET_CHAR(salts, salts->size)[target_i++] = c;
+    //                 }
+    //                 break;
+    //             case hash:
+    //                 if (c == ':' || c == '\n' || c == '\0') {
+    //                     // Make sure the hash has enough characters
+    //                     if (target_i != 22) {
+    //                         #ifdef DEBUG
+    //                         fprintf(stderr, "[WARNING] Encountered hash with incorrect size on line %d; skipping\n", line);
+    //                         #endif
+    //                     }
+    //                     if (c == '\n') { line++; }
+    //                 }
+    //         }
+    //     }
+    // }
+    // if (salts->size < salts->max_size && users->size < users->max_size && !feof(handle)) {
+    //     // Stopped prematurly; we errored somehow
+    //     fprintf(stderr, "[ERROR] Could not read from file '" DICTIONARY_PATH "': %s\n", strerror(errno));
+    //     return 0;
+    // }
+
+    return 0;
 }
 
 
 
 /***** MAIN *****/
 int main(int argc, const char** argv) {
-    /***** Initialize by parsing command line args and reading the dictionary file. *****/
+    /***** Initialize by parsing command line args and opening handles. *****/
     // Read the CL-args
     // const char* passwd_path;
     const char* shadow_path;
@@ -189,41 +238,103 @@ int main(int argc, const char** argv) {
         return errno;
     }
 
-    // Then, read the dictionary file with all the passwords
-    Passwords* passwords = read_passwords(dictionary);
+
+
+    /***** Next, extract a list of users and unique salts from the shadow file. *****/
+    // First, declare an Array to store the salts in
+    Array* salts = malloc(sizeof(Array) + sizeof(char) * MAX_SALTS * (MAX_SALT_LENGTH + 1));
+    salts->data = ((char*) salts) + sizeof(Array);
+    salts->size = 0;
+    salts->max_size = MAX_SALTS;
+
+    // Then, another Array to declare the Users
+    Array* users = malloc(sizeof(Array) + sizeof(User) * MAX_USERS);
+    users->data = ((char*) users) + sizeof(Array);
+    users->size = 0;
+    users->max_size = MAX_USERS;
+    
+    // Now, call a function to do the work for us >:)
+    read_shadow(salts, users, shadow_h);
+
+
+
+    /***** Then, read the dictionary file with all the passwords. *****/
+    Array* passwords = read_passwords(dictionary);
     fclose(dictionary);
     if (passwords == NULL) {
         fclose(shadow_h);
         return errno;
     }
+    #ifdef DEBUG
     fprintf(stderr, "[INFO] Loaded %d passwords.\n", passwords->size);
+    #endif
 
-    
 
-    /***** Next, start reading the passwd file *****/
-    User* user = malloc(sizeof(User));
-    user->username = malloc(sizeof(char) * CHUNK_SIZE);
-    user->hash = malloc(sizeof(char) * CHUNK_SIZE);
-    user->salt = malloc(sizeof(char) * CHUNK_SIZE);
-    while (1) {
-        int result = get_user(user, shadow_h);
-        if (result < 1) { break; }
-    }
+
+    /***** Then, we spawn threads which will first compute their share of hashes, and
+     ***** then start comparing those to the hashes we have for all users. *****/
+    // Get the number of HW threads available on this machine
 
 
     
-    /***** Cleanup. *****/
+    /***** Finally, wait until all threads are finished and clean up. *****/
     // Close the files
     fclose(shadow_h);
 
     // Deallocate
-    free(user->username);
-    free(user->hash);
-    free(user->salt);
-    free(user);
     free(passwords);
 
     /* Done! */
     return 0;
 
+
+    // /***** Next, start reading the passwd file *****/
+    // // Create a User object to store each parsed user
+    // User* user = malloc(sizeof(User));
+    // user->username = malloc(sizeof(char) * CHUNK_SIZE);
+    // user->hash = malloc(sizeof(char) * CHUNK_SIZE);
+    // user->salt = malloc(sizeof(char) * CHUNK_SIZE);
+    // // Get users as long as there are any
+    // int line = 0;
+    // while (1) {
+    //     int result = get_user(user, line, shadow_h);
+    //     if (result == 0) { break; }
+    //     else if (result == -1) {
+    //         // Something bad happened, so let's quit
+    //         fclose(shadow_h);
+    //         free(user->username);
+    //         free(user->hash);
+    //         free(user->salt);
+    //         free(user);
+    //         free(passwords);
+    //         exit(errno);
+    //     }
+        
+    //     #ifdef DEBUG
+    //     fprintf(stderr, "[INFO] Considering user '%s'...\n", user->username);
+    //     #endif
+
+    //     // Try to hash each password on this user until we find one
+    //     for (int i = 0; i < passwords->size; i++) {
+    //         #ifdef DEBUG
+    //         fprintf(stderr, "[INFO]    Computing hash %d/%d\r", i + 1, passwords->size);
+    //         #endif
+
+    //         char* pwd = GET_PWD(passwords, i);
+    //         char* result = crypt(pwd, user->salt);
+
+    //         // Fetch the key-part from the result & check if it's correct
+    //         char* guess = result + user->salt_len;
+    //         if (strcmp(guess, user->salt) == 0) {
+    //             fprintf(stdout, "%s:%s\n", user->username, pwd);
+    //             fflush(stdout);
+    //             break;
+    //         }
+    //     #ifdef DEBUG
+    //     fprintf(stderr, "\n");
+    //     #endif
+        
+    //     // Don't forget to increment the line number
+    //     line++;
+    // }
 }
