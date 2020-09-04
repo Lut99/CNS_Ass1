@@ -4,7 +4,7 @@
  * Created:
  *   02/09/2020, 20:34:28
  * Last edited:
- *   04/09/2020, 18:32:15
+ *   04/09/2020, 21:38:30
  * Auto updated?
  *   Yes
  *
@@ -40,6 +40,8 @@
 #define MAX_SALTS 128
 /* Determines the maximum number of characters a salt can exist of (including null-termination). */
 #define MAX_SALT_LENGTH 3
+/* Determines the maximum number of characters a hash can exist of (including null-termination). */
+#define MAX_HASH_LENGTH 23
 /* Determines the maximum number of users loaded in memory. */
 #define MAX_USERS 10000
 /* Determines the maximum number of characters allowed in a username (including null-termination). */
@@ -92,7 +94,7 @@ Array* read_passwords(FILE* dictionary) {
     passwords->max_size = MAX_PASSWORDS;
 
     // Loop and read the file
-    for (;passwords->size < MAX_PASSWORDS && fgets(GET_PWD(passwords, passwords->size++), MAX_PASSWORD_LENGTH, dictionary) != NULL;) {}
+    for (;passwords->size < MAX_PASSWORDS && fgets(GET_CHAR(passwords, passwords->size++), MAX_PASSWORD_LENGTH, dictionary) != NULL;) {}
 
     // Check if anything illegal occured
     if (passwords->size < MAX_PASSWORDS && !feof(dictionary)) {
@@ -132,78 +134,211 @@ Array* read_passwords(FILE* dictionary) {
 int read_shadow(Array* salts, Array* users, FILE* handle) {
     // Let's loop through the handle
     char buffer[CHUNK_SIZE];
+    char salt_buffer[MAX_SALT_LENGTH];
+    #ifdef DEBUG
     int line = 0;
-    
+    #endif
+    while (fgets(buffer, CHUNK_SIZE, handle) != NULL) {
+        // Let's do this REGEX-style
+        char c;
+        int i = 0;
+        int index = 0;
 
-    // while (fgets(buffer, CHUNK_SIZE, handle) != NULL) {
-    //     // Loop through the buffer to extract useful information
-    //     ParseState state = username;
-    //     int stop = 0;
-    //     int target_i = 0;
-    //     int dollar_count = 0;
-    //     for (int i = 0; stop == 0 && i < CHUNK_SIZE; i++) {
-    //         char c = buffer[i];
-    //         switch(state) {
-    //             case username:
-    //                 if (c == '\n' || c == '\0') {
-    //                     // We didn't finish the username; skip this user
-    //                     #ifdef DEBUG
-    //                     fprintf(stderr, "[WARNING] Encountered user with only a username on line %d; skipping\n", line);
-    //                     #endif
-                        
-    //                     if (c == '\n') { line++; }
-    //                     stop = 1;
-    //                 } else if (c == ':') {
-    //                     // Add null-termination to the username, then move to the next state
-    //                     ((User*) users->data[users->size])->username[target_i] = '\0';
-    //                     target_i = 0;
-    //                     state = salt;
-    //                 } else {
-    //                     // Add to the username
-    //                     ((User*) users->data[users->size])->username[target_i++] = c;
-    //                 }
-    //                 break;
-    //             case salt:
-    //                 if (c == '\n' || c == '\0') {
-    //                     // We didn't finish the salt; skip this user
-    //                     #ifdef DEBUG
-    //                     fprintf(stderr, "[WARNING] Encountered user with only a username and a salt on line %d; skipping\n", line);
-    //                     #endif
-    //                     if (c == '\n') { line++; }
-    //                     stop = 1;
-    //                 } else if (c == '$') {
-    //                     // Add it to the salt
-    //                     GET_CHAR(salts, salts->size)[target_i++] = c;
-    //                     if (dollar_count++ == 2) {
-    //                         // Finish it with a '\0', and then move to the next state
-    //                         GET_CHAR(salts, salts->size)[target_i] = '\0';
-    //                         target_i = 0;
-    //                         state = hash;
-    //                     }
-    //                 } else {
-    //                     // Add to the salt
-    //                     GET_CHAR(salts, salts->size)[target_i++] = c;
-    //                 }
-    //                 break;
-    //             case hash:
-    //                 if (c == ':' || c == '\n' || c == '\0') {
-    //                     // Make sure the hash has enough characters
-    //                     if (target_i != 22) {
-    //                         #ifdef DEBUG
-    //                         fprintf(stderr, "[WARNING] Encountered hash with incorrect size on line %d; skipping\n", line);
-    //                         #endif
-    //                     }
-    //                     if (c == '\n') { line++; }
-    //                 }
-    //         }
-    //     }
-    // }
-    // if (salts->size < salts->max_size && users->size < users->max_size && !feof(handle)) {
-    //     // Stopped prematurly; we errored somehow
-    //     fprintf(stderr, "[ERROR] Could not read from file '" DICTIONARY_PATH "': %s\n", strerror(errno));
-    //     return 0;
-    // }
+username:
+        // The username accepts anything alphanumerical
+        if (i == CHUNK_SIZE) {
+            #ifdef DEBUG
+            fprintf(stderr, "[WARNING] Not enough characters to read username on line %d; skipping.\n", line);
+            #endif
+            goto fail;
+        }
+        c = buffer[i++];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' || c <= '9')) {
+            // Add to the array and then go to username again
+            if (index == MAX_USERNAME_LENGTH - 1) {
+                #ifdef DEBUG
+                fprintf(stderr, "[WARNING] Overflow in username on line %d; skipping.\n", line);
+                #endif
+                goto fail;
+            }
+            (((User*) (users->data)) + users->size)->username[index++] = c;
+            goto username;
+        } else if (c == ':') {
+            // Move to the next one, the salt
+            (((User*) (users->data)) + users->size)->username[index++] = '\0';
+            index = 0;
+            goto salt_dollar;
+        } else {
+            #ifdef DEBUG
+            fprintf(stderr, "[WARNING] Encountered illegal character '%c' on line %d while extracting user's name; skipping.\n", c, line);
+            #endif
+            goto fail;
+        }
 
+salt_dollar:
+        // Salt expects one DOLLAR, numbers followed by one dollar, salt & one final dollar
+        if (i == CHUNK_SIZE) {
+            #ifdef DEBUG
+            fprintf(stderr, "[WARNING] Not enough characters to read salt on line %d; skipping.\n", line);
+            #endif
+            goto fail;
+        }
+        c = buffer[i++];
+        if (c == '$') {
+            // Move to the next one, the salt_numbers (after adding it to the salt)
+            if (index == MAX_SALT_LENGTH - 1) {
+                #ifdef DEBUG
+                fprintf(stderr, "[WARNING] Overflow in salt on line %d; skipping.\n", line);
+                #endif
+                goto fail;
+            }
+            salt_buffer[index++] = c;
+            goto salt_numbers;
+        } else {
+            #ifdef DEBUG
+            fprintf(stderr, "[WARNING] Encountered illegal character '%c' on line %d while extracting user's salt (first dollar); skipping.\n", c, line);
+            #endif
+            goto fail;
+        }
+
+salt_numbers:
+        // Salt expects one dollar, NUMBERS FOLLOWED BY ONE DOLLAR, salt & one final dollar
+        if (i == CHUNK_SIZE) {
+            #ifdef DEBUG
+            fprintf(stderr, "[WARNING] Not enough characters to read salt on line %d; skipping.\n", line);
+            #endif
+            goto fail;
+        }
+        c = buffer[i++];
+        if (c >= '0' && c <= '9') {
+            // Add it to the list, then do it again
+            if (index == MAX_SALT_LENGTH - 1) {
+                #ifdef DEBUG
+                fprintf(stderr, "[WARNING] Overflow in salt on line %d; skipping.\n", line);
+                #endif
+                goto fail;
+            }
+            salt_buffer[index++] = c;
+            goto salt_numbers;
+        } else if (c == '$') {
+            // Add it to the list, then move to the next state
+            if (index == MAX_SALT_LENGTH - 1) {
+                #ifdef DEBUG
+                fprintf(stderr, "[WARNING] Overflow in salt on line %d; skipping.\n", line);
+                #endif
+                goto fail;
+            }
+            salt_buffer[index++] = c;
+            goto salt_salt;
+        } else {
+            #ifdef DEBUG
+            fprintf(stderr, "[WARNING] Encountered illegal character '%c' on line %d while extracting user's salt (algorithm); skipping.\n", c, line);
+            #endif
+            goto fail;
+        }
+
+
+salt_salt:
+        // Salt expects one dollar, numbers followed by one dollar, SALT & ONE FINAL DOLLAR
+        if (i == CHUNK_SIZE) {
+            #ifdef DEBUG
+            fprintf(stderr, "[WARNING] Not enough characters to read salt on line %d; skipping.\n", line);
+            #endif
+            goto fail;
+        }
+        c = buffer[i++];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' || c <= '9')) {
+            // Re-do this state after adding the character
+            if (index == MAX_SALT_LENGTH - 1) {
+                #ifdef DEBUG
+                fprintf(stderr, "[WARNING] Overflow in salt on line %d; skipping.\n", line);
+                #endif
+                goto fail;
+            }
+            salt_buffer[index++] = c;
+            goto salt_salt;
+        } else if (c == '$') {
+            // Go to the last state, the hash
+            if (index == MAX_SALT_LENGTH - 1) {
+                #ifdef DEBUG
+                fprintf(stderr, "[WARNING] Overflow in salt on line %d; skipping.\n", line);
+                #endif
+                goto fail;
+            }
+            salt_buffer[index++] = c;
+            salt_buffer[index] = '\0';
+            index = 0;
+            goto hash;
+        } else {
+            #ifdef DEBUG
+            fprintf(stderr, "[WARNING] Encountered illegal character '%c' on line %d while extracting user's salt; skipping.\n", c, line);
+            #endif
+            goto fail;
+        }
+        
+hash:
+        // The hash are simply any character until ':' is reached
+        if (i == CHUNK_SIZE) {
+            #ifdef DEBUG
+            fprintf(stderr, "[WARNING] Not enough characters to read hash on line %d; skipping.\n", line);
+            #endif
+            goto fail;
+        }
+        c = buffer[i++];
+        if (c == ':') {
+            // Move to the final state
+            (((User*) (users->data)) + users->size)->hash[index] = '\0';
+            goto succes;
+        } else {
+            // Re-do this state after adding the character
+            if (index == MAX_HASH_LENGTH - 1) {
+                #ifdef DEBUG
+                fprintf(stderr, "[WARNING] Overflow in hash on line %d; skipping.\n", line);
+                #endif
+                goto fail;
+            }
+            (((User*) (users->data)) + users->size)->hash[index++] = c;
+            goto hash;
+        }
+
+succes:
+        // We can keep this one, so increment the user size
+        if (users->size == users->max_size) {
+            fprintf(stderr, "[ERROR] Encountered too many users in the shadow file; aborting.\n");
+            return 0;
+        }
+        users->size++;
+        // For the salts, only add it to the list if it doesn't already exist there
+        int found = 0;
+        for (int i = 0; i < salts->size; i++) {
+            if (strcmp(GET_CHAR(salts, i), salt_buffer) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        if (found) {
+            if (salts->size == salts->max_size) {
+                fprintf(stderr, "[ERROR] Encountered too many different salts in the shadow file; aborting.\n");
+                return 0;
+            }
+            int i = 0;
+            do {
+                char c = salt_buffer[i];
+                GET_CHAR(salts, salts->size)[i] = c;
+            } while (c != '\0');
+            salts->size++;
+        }
+
+fail:
+        // Increment line (if in DEBUG mode)
+        #ifdef DEBUG
+        line++
+        #endif
+        ;
+
+    }
+
+    // We're done here
     return 0;
 }
 
