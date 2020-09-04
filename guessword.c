@@ -4,7 +4,7 @@
  * Created:
  *   02/09/2020, 20:34:28
  * Last edited:
- *   9/4/2020, 12:36:57 PM
+ *   9/4/2020, 2:39:21 PM
  * Auto updated?
  *   Yes
  *
@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <crypt.h>
 
 
 /***** MACROS *****/
@@ -50,8 +51,9 @@
 /* The ParseState-enum determines what part of the User struct we're trying to parse right now. */
 typedef enum PARSESTATE {
     username,
+    salt,
     hash,
-    salt
+    done
 } ParseState;
 
 
@@ -64,17 +66,12 @@ typedef struct PASSWORDS {
     int size;
 } Passwords;
 
-/* The Extended-File struct, which contains a FILE and a pre-allocated read buffer to prevent unnecessary allocs. */
-typedef struct EFILE {
-    FILE* handle;
-    char* buffer;
-} eFile;
-
 /* The User-struct, which contains information on a user (his username, the hash & the matching salt). */
 typedef struct USER {
     char* username;
     char* hash;
     char* salt;
+    int salt_len;
 } User;
 
 
@@ -137,10 +134,9 @@ Passwords* read_passwords(FILE* dictionary) {
 }
 
 /* Reads a single line from a given shadow file, and then parses that to the given User object. Returns 1 if it was successful, 0 if EOF was reached and -1 if an error occured. */
-int get_user(User* user, FILE* handle) {
+int get_user(User* user, int line, FILE* handle) {
     // Try to read whatever is left in the buffer
     char buffer[CHUNK_SIZE];
-    int buffer_i = 0;
     if (fgets(buffer, sizeof(buffer), handle) == NULL) {
         if (feof(handle)) {
             return 0;
@@ -149,12 +145,74 @@ int get_user(User* user, FILE* handle) {
             return -1;
         }
     }
+
+    // Reset the user's fields to be empty strings so we can check if there is something
+    user->username[0] = '\0';
+    user->salt[0] = '\0';
+    user->salt_len = 0;
+    user->hash[0] = '\0';
     
     // If succesful, we attempt to parse this
+    int index = 0;
     ParseState state = username;
-    for (int i = 0; i < CHUNK_SIZE; i++) {
+    int n_dollars = 0;
+    for (int i = 0; state != done && i < CHUNK_SIZE; i++) {
         char c = buffer[i];
+        switch(state) {
+            case username:
+                if (c == ':') {
+                    user->username[index] = '\0';
+                    state = salt;
+                    index = 0;
+                } else {
+                    user->username[index++] = c;
+                }
+                break;
+            case salt:
+                if (c == '$') {
+                    n_dollars++;
+                    if (n_dollars == 3) {
+                        user->salt[index] = '$';
+                        user->salt[index + 1] = '\0';
+                        state = hash;
+                        index = 0;
+                        break;
+                    }
+                }
+                user->salt[index++] = c;
+                user->salt_len++;
+                break;
+            case hash:
+                if (c == ':') {
+                    user->hash[index] = '\0';
+                    state = done;
+                } else {
+                    user->hash[index++] = c;
+                }
+                break;
+            case done:
+                // Nothing, just skip
+                break;
+        }
     }
+
+    // Check if any of them have been written to
+    if (user->username[0] == '\0') {
+        fprintf(stderr, "[ERROR] Missing username on line %d in shadow file.\n", line);
+        return -1;
+    } else if (user->salt[0] == '\0') {
+        fprintf(stderr, "[ERROR] Missing salt on line %d in shadow file.\n", line);
+        return -1;
+    } else if (user->hash[0] == '\0') {
+        fprintf(stderr, "[ERROR] Missing hash on line %d in shadow file.\n", line);
+        return -1;
+    } else if (state != done) {
+        fprintf(stderr, "[ERROR] Missing closing ':' after hash on line %d in shadow file.\n", line);
+        return -1;
+    }
+
+    // If we made it until here, it checks out - so return
+    return 1;
 
 }
 
@@ -162,7 +220,7 @@ int get_user(User* user, FILE* handle) {
 
 /***** MAIN *****/
 int main(int argc, const char** argv) {
-    /***** Initialize by parsing command line args and reading the dictionary file. *****/
+    /***** Initialize by parsing command line args and opening handles. *****/
     // Read the CL-args
     // const char* passwd_path;
     const char* shadow_path;
@@ -189,30 +247,33 @@ int main(int argc, const char** argv) {
         return errno;
     }
 
-    // Then, read the dictionary file with all the passwords
+
+
+    /***** Then, read the dictionary file with all the passwords. *****/
     Passwords* passwords = read_passwords(dictionary);
     fclose(dictionary);
     if (passwords == NULL) {
         fclose(shadow_h);
         return errno;
     }
+    #ifdef DEBUG
     fprintf(stderr, "[INFO] Loaded %d passwords.\n", passwords->size);
+    #endif
+
+
+
+    /***** Next, extract a list of users and unique salts from the shadow file. *****/
+    // We will call a function for this
+
+
+
+    /***** Then, we spawn threads which will first compute their share of hashes, and
+     ***** then start comparing those to the hashes we have for all users. *****/
+    // Get the number of HW threads available on this machine
+
 
     
-
-    /***** Next, start reading the passwd file *****/
-    User* user = malloc(sizeof(User));
-    user->username = malloc(sizeof(char) * CHUNK_SIZE);
-    user->hash = malloc(sizeof(char) * CHUNK_SIZE);
-    user->salt = malloc(sizeof(char) * CHUNK_SIZE);
-    while (1) {
-        int result = get_user(user, shadow_h);
-        if (result < 1) { break; }
-    }
-
-
-    
-    /***** Cleanup. *****/
+    /***** Finally, wait until all threads are finished and clean up. *****/
     // Close the files
     fclose(shadow_h);
 
@@ -226,4 +287,54 @@ int main(int argc, const char** argv) {
     /* Done! */
     return 0;
 
+
+    // /***** Next, start reading the passwd file *****/
+    // // Create a User object to store each parsed user
+    // User* user = malloc(sizeof(User));
+    // user->username = malloc(sizeof(char) * CHUNK_SIZE);
+    // user->hash = malloc(sizeof(char) * CHUNK_SIZE);
+    // user->salt = malloc(sizeof(char) * CHUNK_SIZE);
+    // // Get users as long as there are any
+    // int line = 0;
+    // while (1) {
+    //     int result = get_user(user, line, shadow_h);
+    //     if (result == 0) { break; }
+    //     else if (result == -1) {
+    //         // Something bad happened, so let's quit
+    //         fclose(shadow_h);
+    //         free(user->username);
+    //         free(user->hash);
+    //         free(user->salt);
+    //         free(user);
+    //         free(passwords);
+    //         exit(errno);
+    //     }
+        
+    //     #ifdef DEBUG
+    //     fprintf(stderr, "[INFO] Considering user '%s'...\n", user->username);
+    //     #endif
+
+    //     // Try to hash each password on this user until we find one
+    //     for (int i = 0; i < passwords->size; i++) {
+    //         #ifdef DEBUG
+    //         fprintf(stderr, "[INFO]    Computing hash %d/%d\r", i + 1, passwords->size);
+    //         #endif
+
+    //         char* pwd = GET_PWD(passwords, i);
+    //         char* result = crypt(pwd, user->salt);
+
+    //         // Fetch the key-part from the result & check if it's correct
+    //         char* guess = result + user->salt_len;
+    //         if (strcmp(guess, user->salt) == 0) {
+    //             fprintf(stdout, "%s:%s\n", user->username, pwd);
+    //             fflush(stdout);
+    //             break;
+    //         }
+    //     #ifdef DEBUG
+    //     fprintf(stderr, "\n");
+    //     #endif
+        
+    //     // Don't forget to increment the line number
+    //     line++;
+    // }
 }
