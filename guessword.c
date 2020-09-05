@@ -4,7 +4,7 @@
  * Created:
  *   02/09/2020, 20:34:28
  * Last edited:
- *   05/09/2020, 17:39:05
+ *   05/09/2020, 22:51:11
  * Auto updated?
  *   Yes
  *
@@ -24,12 +24,13 @@
 #include <crypt.h>
 #include <pthread.h>
 #include <sched.h>
-#include <stdio.h>
 #include <sys/time.h>
 
 
 /***** CONSTANTS *****/
 
+/* If given, enables all sorts of extra prints useful for debugging. */
+// #define DEBUG
 /* Determines the maximum number of passwords stored in memory. */
 #define MAX_PASSWORDS 10000000
 /* Determines the maximum length of a single password (including null-termination). */
@@ -372,8 +373,8 @@ void* thread_main(void* data) {
     Array* passwords = tdata->passwords;
     char* salt = tdata->salt;
     int salt_len = tdata->salt_len;
-    int start = tdata->start;
-    int stop = tdata->stop;
+    unsigned long start = tdata->start;
+    unsigned long stop = tdata->stop;
 
     // Start with our time measurement
     #ifdef DEBUG
@@ -382,23 +383,24 @@ void* thread_main(void* data) {
     #endif
     
     // Go through our range to compute the hashes & compare them once computed
+    struct crypt_data cdata;
+    cdata.initialized = 0;
     for (unsigned long p = start; p <= stop; p++) {
-        // Acquire the correct password
         // Compute the hash
-        char* result = crypt(GET_CHAR(passwords, p), salt);
+        char* result = crypt_r(GET_CHAR(passwords, p), salt, &cdata);
         // Remove the salt bit from the result
         char* hash = result + salt_len;
-        // // Compare it with the hash we know each user has
-        // for (long i = 0; i < tdata->users->size; i++) {
-        //     User* user = GET_USER(tdata->users, i);
-        //     if (!user->guessed && streq(hash, user->hash)) {
-        //         // We have this user, so print the result
-        //         fprintf(stdout, "%s:%s\n",user->username, password);
-        //         fflush(stdout);
-        //         // Mark that we guessed it
-        //         user->guessed = 1;
-        //     }
-        // }
+        // Compare it with the hash we know each user has
+        for (long i = 0; i < tdata->users->size; i++) {
+            User* user = GET_USER(tdata->users, i);
+            if (!user->guessed && streq(hash, user->hash)) {
+                // We have this user, so print the result
+                fprintf(stdout, "%s:%s\n", user->username, GET_CHAR(passwords, p));
+                fflush(stdout);
+                // Mark that we guessed it
+                user->guessed = 1;
+            }
+        }
     }
 
     #ifdef DEBUG
@@ -484,7 +486,7 @@ int main(int argc, const char** argv) {
 
     /***** Then, we spawn threads which will handle the rest. *****/
     // Get the number of HW threads available on this machine
-    int n_threads = 8;//nprocs();
+    int n_threads = nprocs();
     if (n_threads > passwords->size) { n_threads = passwords->size; }
     #ifdef DEBUG
     fprintf(stderr, "[INFO] Using %d threads.\n\n", n_threads);

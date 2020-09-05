@@ -45,7 +45,7 @@ guessword: $(BIN)/guessword.out
 $(OBJ)/benchmark.o: $(SRC)/benchmark.c | $(OBJ)
 	$(GCC) $(GCC_ARGS) -o $@ -c $<
 $(BIN)/benchmark.out: $(OBJ)/benchmark.o | $(BIN)
-	$(GCC) $(GCC_ARGS) -o $@ $^ -lcrypt
+	$(GCC) $(GCC_ARGS) -pthread -o $@ $^ -lcrypt -lpthread
 benchmark: $(BIN)/benchmark.out
 
 # Guessword using the assignment's requirements
