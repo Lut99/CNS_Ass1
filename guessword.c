@@ -4,7 +4,7 @@
  * Created:
  *   02/09/2020, 20:34:28
  * Last edited:
- *   05/09/2020, 14:59:39
+ *   05/09/2020, 17:39:05
  * Auto updated?
  *   Yes
  *
@@ -107,27 +107,28 @@ typedef struct USER {
     char username[MAX_USERNAME_LENGTH];
     char hash[MAX_HASH_LENGTH];
     int salt_id;
+    int guessed;
 } User;
 
 
 
 /* The ThreadData-struct, which is used to move the relevant data to the threads. */
 typedef struct THREADDATA {
-    // The pthread-relevant thread ID
+    // The pthread-relevant thread ID.
     pthread_t tdata;
-    // The human-relevant thread ID
+    // The human-relevant thread ID.
     int tid;
-    // Reference to the list where we will store our hashes
-    Array** hashes;
-    // Reference to the list of all passwords
+    // Reference to the list of all passwords.
     Array* passwords;
-    // Reference to the list of all users
+    // Reference to the list of all users.
     Array* users;
-    // Reference to the list of all salts
-    Array* salts;
-    // The start of our assigned range of passwords. Can be thought of as a flattened coordinate, where the rows are the salts and the columns are the passwords.
+    // Reference to the salt used.
+    char* salt;
+    // The size of the salt used.
+    int salt_len;
+    // The start of our assigned range of passwords.
     unsigned long start;
-    // The end of our assigned range of passwords. Can be thought of as a flattened coordinate, where the rows are the salts and the columns are the passwords.
+    // The end of our assigned range of passwords.
     unsigned long stop;
     #ifdef DEBUG
     /* Lists the time that the Thread took to compute it's share of threads. */
@@ -195,7 +196,7 @@ int read_passwords(Array* passwords, FILE* dictionary_h) {
     // Check if anything illegal occured
     if (passwords->size < MAX_PASSWORDS && !feof(dictionary_h)) {
         // Stopped prematurly; we errored somehow
-        fprintf(stderr, "[ERROR] Could not read from file '" DICTIONARY_PATH "': %s\n", strerror(errno));
+        fprintf(stderr, "[ERROR] Could not read from dictionary file: %s\n", strerror(errno));
         return errno;
     }
     
@@ -204,16 +205,16 @@ int read_passwords(Array* passwords, FILE* dictionary_h) {
 }
 
 /* Reads a shadow file to memory. Returns a list of User objects that describes each user in the file, and a list of all unique salts used. Return '1' if successful or '0' otherwise. */
-int read_shadow(Array* salts, Array* users, FILE* shadow_h) {
+int read_shadow(char* salt_s, Array* users, FILE* shadow_h) {
     // Create buffers to store stuff in
     char line_buffer[CHUNK_SIZE];
-    char salt_buffer[MAX_SALT_LENGTH];
 
     // Loop through the file and read line-by-line
+    int salt_done = 0;
     #ifdef DEBUG
     long line = 0;
     #endif
-    while (users->size < MAX_USERS && salts->size < MAX_SALTS && fgets(line_buffer, CHUNK_SIZE, shadow_h) != NULL) {
+    while (users->size < MAX_USERS && fgets(line_buffer, CHUNK_SIZE, shadow_h) != NULL) {
         // Loop through the line buffer to parse each line
         int skip = 0;
         long index = 0;
@@ -271,13 +272,16 @@ int read_shadow(Array* salts, Array* users, FILE* shadow_h) {
                             #endif
                             skip = 1;
                             break;
-                        } else {
-                            salt_buffer[index++] = c;
+                        } else if (!salt_done) {
+                            salt_s[index++] = c;
                         }
 
                         // If we have encountered three dollars, then it's time to move to the next phase
                         if (c == '$' && ++dollar_count == 3) {
-                            salt_buffer[index] = '\0';
+                            if (!salt_done) {
+                                salt_s[index] = '\0';
+                                salt_done = 1;
+                            }
                             index = 0;
                             state = hash;
                         }
@@ -303,41 +307,10 @@ int read_shadow(Array* salts, Array* users, FILE* shadow_h) {
 
                         // Finish the hash && advance users, as that part is done now
                         GET_USER(users, users->size)->hash[index] = '\0';
+                        GET_USER(users, users->size)->guessed = 0;
+                        users->size++;
 
-                        // Then, check if the salt we parsed is unique and, if so, we add it to the list of salts
-                        int found = -1;
-                        for (long i = 0; i < salts->size; i++) {
-                            char* salt = GET_CHAR(salts, i);
-                            if (strcmp(salt, salt_buffer) == 0) {
-                                found = i;
-                                break;
-                            }
-                        }
-                        if (found == -1) {
-                            // Check if we have room for this salt
-                            if (salts->size == MAX_SALTS) {
-                                #ifdef DEBUG
-                                fprintf(stderr, "[WARNING] Encountered too many salts starting on line %ld; skipping matching user.\n",
-                                        line);
-                                #endif
-                                skip = 1;
-                            } else {
-                                // Copy the new salt to the list of salts
-                                for (int i = 0; i < MAX_SALT_LENGTH; i++) {
-                                    GET_CHAR(salts, salts->size)[i] = salt_buffer[i];
-                                    if (salt_buffer[i] == '\0') { break; }
-                                }
-                                // Update the found & size variables
-                                found = salts->size;
-                                salts->size++;
-                            }
-                        }
-                        // If we didn't have to skip, then also increment the user & set his salt_id
-                        if (!skip) {
-                            GET_USER(users, users->size)->salt_id = found;
-                            users->size++;
-                        }
-                        // Skip now
+                        // Skip to avoid reading the rest of the line
                         skip = 1;
                     } else {
                         // Simply add to the hash of the user (if not overflowing)
@@ -359,6 +332,13 @@ int read_shadow(Array* salts, Array* users, FILE* shadow_h) {
         #endif
     }
 
+    // Check if anything illegal occured
+    if (users->size < MAX_USERS && !feof(shadow_h)) {
+        // Stopped prematurly; we errored somehow
+        fprintf(stderr, "[ERROR] Could not read from shadow file: %s\n", strerror(errno));
+        return errno;
+    }
+
     // We're done here
     return 0;
 }
@@ -372,6 +352,14 @@ int nprocs()
   return CPU_COUNT(&cs);
 }
 
+/* Returns 1 if both of the given strings are equal, or 0 otherwise. */
+int streq(char* str1, char* str2) {
+    for (int i = 0; ; i++) {
+        if (str1[i] != str2[i]) { return 0; }
+        if (str1[i] == '\0') { return 1; }
+    }
+}
+
 
 
 /***** THREAD MAINS *****/
@@ -380,12 +368,12 @@ int nprocs()
 void* thread_main(void* data) {
     ThreadData* tdata = (ThreadData*) data;
 
-    /* Phase 1: Compute the hashes. */
-    // Uncompress our range into a start (salt, pwd) and stop (salt,pwd)
-    unsigned long start_salt_id = tdata->start / tdata->passwords->size;
-    unsigned long start_password = tdata->start % tdata->passwords->size;
-    unsigned long stop_salt_id = tdata->stop / tdata->passwords->size;
-    unsigned long stop_password = tdata->stop % tdata->passwords->size;
+    // Get some shortcuts to stuff in tdata
+    Array* passwords = tdata->passwords;
+    char* salt = tdata->salt;
+    int salt_len = tdata->salt_len;
+    int start = tdata->start;
+    int stop = tdata->stop;
 
     // Start with our time measurement
     #ifdef DEBUG
@@ -393,32 +381,30 @@ void* thread_main(void* data) {
     gettimeofday(&start_clock, NULL);
     #endif
     
-    // Go through our range to compute the hashes
-    for (unsigned long s = start_salt_id; s <= stop_salt_id; s++) {
-        unsigned long start = s == start_salt_id ? start_password : 0;
-        unsigned long stop = s == stop_salt_id ? stop_password : tdata->passwords->size - 1UL;
-        for (unsigned long p = start; p <= stop; p++) {
-            // Acquire the correct password
-            char* password = GET_CHAR(tdata->passwords, p);
-            // Hash it
-            char* result = crypt(password, GET_CHAR(tdata->salts, s));
-            // Extract the hash from it
-            char* hash = result + strlen(GET_CHAR(tdata->salts, s));
-            // Store it in the destination dict
-            for (int i = 0; ; i++) {
-                GET_CHAR(tdata->hashes[s], p)[i] = hash[i];
-                if (hash[i] == '\0') { break; }
-            }
-        }
+    // Go through our range to compute the hashes & compare them once computed
+    for (unsigned long p = start; p <= stop; p++) {
+        // Acquire the correct password
+        // Compute the hash
+        char* result = crypt(GET_CHAR(passwords, p), salt);
+        // Remove the salt bit from the result
+        char* hash = result + salt_len;
+        // // Compare it with the hash we know each user has
+        // for (long i = 0; i < tdata->users->size; i++) {
+        //     User* user = GET_USER(tdata->users, i);
+        //     if (!user->guessed && streq(hash, user->hash)) {
+        //         // We have this user, so print the result
+        //         fprintf(stdout, "%s:%s\n",user->username, password);
+        //         fflush(stdout);
+        //         // Mark that we guessed it
+        //         user->guessed = 1;
+        //     }
+        // }
     }
 
     #ifdef DEBUG
     gettimeofday(&stop_clock, NULL);
     tdata->elapsed = ((stop_clock.tv_sec - start_clock.tv_sec) * 1000000 + (stop_clock.tv_usec - start_clock.tv_usec)) / 1000000.0;
     #endif
-    
-    /* Phase 2: Compare each hash we computed with each user. */
-    /* TBD */
 
     return NULL;
 }
@@ -431,13 +417,17 @@ int main(int argc, const char** argv) {
     // Read the CL-args
     // const char* passwd_path;
     const char* shadow_path;
-    if (argc != 3) {
-        printf("Usage: %s passwd_path shadow_path\n", argv[0]);
+    const char* dictionary_path = DICTIONARY_PATH;
+    if (argc < 3 || argc > 4) {
+        printf("Usage: %s passwd_path shadow_path [dictionary_path]\n", argv[0]);
         exit(0);
     } else {
         // Actually ifnore the passwd for now, as I think everything we need to know is in the shadow file.
         // passwd_path = argv[1];
         shadow_path = argv[2];
+        if (argc == 4) {
+            dictionary_path = argv[3];
+        }
     }
 
     // Check if the files exist by already acquiring FILE handles
@@ -447,10 +437,10 @@ int main(int argc, const char** argv) {
         return errno;
     }
     // Also get a handle for the hardcoded dictionary.txt
-    FILE* dictionary_h = fopen(DICTIONARY_PATH, "r");
+    FILE* dictionary_h = fopen(dictionary_path, "r");
     if (dictionary_h == NULL) {
         fclose(shadow_h);
-        fprintf(stderr, "[ERROR] Could not open file '%s': %s\n", DICTIONARY_PATH, strerror(errno));
+        fprintf(stderr, "[ERROR] Could not open file '%s': %s\n", dictionary_path, strerror(errno));
         return errno;
     }
 
@@ -473,66 +463,67 @@ int main(int argc, const char** argv) {
 
     /***** Next, extract a list of users and unique salts from the shadow file. *****/
     // First, declare an Array to store the salts in and one for the Users
-    Array* salts = Array_create(MAX_SALTS, sizeof(char) * MAX_SALT_LENGTH);
+    char salt[MAX_SALT_LENGTH];
     Array* users = Array_create(MAX_USERS, sizeof(User));
     
     // Now, call a function to do the work for us >:)
-    result = read_shadow(salts, users, shadow_h);
+    result = read_shadow(salt, users, shadow_h);
     if (result != 0) {
         // Something bad happened; cleanup and return
         fclose(shadow_h);
         Array_destroy(passwords);
-        Array_destroy(salts);
         Array_destroy(users);
         return result;
     }
     #ifdef DEBUG
-    fprintf(stderr, "[INFO] Loaded %ld users with %ld different salt(s).\n", users->size, salts->size);
+    fprintf(stderr, "[INFO] Using salt string '%s'.\n", salt);
+    fprintf(stderr, "[INFO] Loaded %ld users.\n", users->size);
     #endif
 
 
 
     /***** Then, we spawn threads which will handle the rest. *****/
     // Get the number of HW threads available on this machine
-    int n_threads = nprocs();
+    int n_threads = 8;//nprocs();
+    if (n_threads > passwords->size) { n_threads = passwords->size; }
     #ifdef DEBUG
-    fprintf(stderr, "[INFO] Using %d threads.\n", nprocs());
+    fprintf(stderr, "[INFO] Using %d threads.\n\n", n_threads);
     #endif
-
-    // Prepare the array storing all hashes. For every salt_id, we have a list equal to the size of Passwords.
-    Array** hashes = malloc(sizeof(Array*) * salts->size);
-    for (int i = 0; i < salts->size; i++) {
-        hashes[i] = Array_create(passwords->size, MAX_HASH_LENGTH);
-    }
-
-    // Compute the total number of passwords to hash
-    unsigned long total = salts->size * passwords->size;
     
     // Spawn n_threads threads
     ThreadData threads[n_threads];
     for (int i = 0; i < n_threads; i++) {
         // First, we populate the ThreadData struct
         threads[i].tid = i;
-        threads[i].hashes = hashes;
         threads[i].passwords = passwords;
-        threads[i].salts = salts;
+        threads[i].salt = salt;
+        threads[i].salt_len = strlen(salt);
         threads[i].users = users;
-        threads[i].start = i * (total / n_threads);
-        threads[i].stop = i < n_threads - 1 ? (i + 1) * (total / n_threads) - 1 : total - 1;
+        threads[i].start = i * (passwords->size / n_threads);
+        threads[i].stop = i < n_threads - 1 ? (i + 1) * (passwords->size / n_threads) - 1 : passwords->size - 1;
 
         // Spawn the thread
         pthread_create(&threads[i].tdata, NULL, thread_main, (void*) &threads[i]);
     }
 
     // Simply wait until they are done
+    #ifdef DEBUG
+    float total_hps = 0;
+    #endif
     for (int i = 0; i < n_threads; i++) {
         pthread_join(threads[i].tdata, NULL);
         #ifdef DEBUG
-        fprintf(stderr, "[INFO] Thread %d computed %lu hashes in %fms = %f hashes/second.\n",
+        float hashes_per_second = ((threads[i].stop + 1) - threads[i].start) / threads[i].elapsed;
+        if (i == 0) { fprintf(stderr, "\n"); }
+        fprintf(stderr, "[INFO] Thread %d computed %lu hashes in %fs = %f hashes/s.\n",
                 threads[i].tid, (threads[i].stop + 1) - threads[i].start, threads[i].elapsed,
-                (((threads[i].stop + 1) - threads[i].start) / threads[i].elapsed) * 1000.0);
+                hashes_per_second);
+        total_hps += hashes_per_second;
         #endif
     }
+    #ifdef DEBUG
+    fprintf(stderr, "[INFO] Average thread speed = %f hashes/s.\n", total_hps / (float) n_threads);
+    #endif
 
     // Check the validity of all threads
 
@@ -542,68 +533,10 @@ int main(int argc, const char** argv) {
     // Close the files
     fclose(shadow_h);
 
-    // Deallocate the hashes
-    for (int i = 0; i < salts->size; i++) {
-        Array_destroy(hashes[i]);
-    }
-    free(hashes);
-
-    // Deallocate the parsed memory
+    // Deallocate the heap memory
     Array_destroy(passwords);
-    Array_destroy(salts);
     Array_destroy(users);
 
     /* Done! */
     return 0;
-
-
-    // /***** Next, start reading the passwd file *****/
-    // // Create a User object to store each parsed user
-    // User* user = malloc(sizeof(User));
-    // user->username = malloc(sizeof(char) * CHUNK_SIZE);
-    // user->hash = malloc(sizeof(char) * CHUNK_SIZE);
-    // user->salt = malloc(sizeof(char) * CHUNK_SIZE);
-    // // Get users as long as there are any
-    // int line = 0;
-    // while (1) {
-    //     int result = get_user(user, line, shadow_h);
-    //     if (result == 0) { break; }
-    //     else if (result == -1) {
-    //         // Something bad happened, so let's quit
-    //         fclose(shadow_h);
-    //         free(user->username);
-    //         free(user->hash);
-    //         free(user->salt);
-    //         free(user);
-    //         free(passwords);
-    //         exit(errno);
-    //     }
-        
-    //     #ifdef DEBUG
-    //     fprintf(stderr, "[INFO] Considering user '%s'...\n", user->username);
-    //     #endif
-
-    //     // Try to hash each password on this user until we find one
-    //     for (int i = 0; i < passwords->size; i++) {
-    //         #ifdef DEBUG
-    //         fprintf(stderr, "[INFO]    Computing hash %d/%d\r", i + 1, passwords->size);
-    //         #endif
-
-    //         char* pwd = GET_PWD(passwords, i);
-    //         char* result = crypt(pwd, user->salt);
-
-    //         // Fetch the key-part from the result & check if it's correct
-    //         char* guess = result + user->salt_len;
-    //         if (strcmp(guess, user->salt) == 0) {
-    //             fprintf(stdout, "%s:%s\n", user->username, pwd);
-    //             fflush(stdout);
-    //             break;
-    //         }
-    //     #ifdef DEBUG
-    //     fprintf(stderr, "\n");
-    //     #endif
-        
-    //     // Don't forget to increment the line number
-    //     line++;
-    // }
 }

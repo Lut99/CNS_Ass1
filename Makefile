@@ -18,10 +18,10 @@ GCC_ARGS += -g -DDEBUG
 endif
 
 ### PHONY RULES ###
-.PHONY: default all clean guessword test
+.PHONY: default all clean guessword benchmark test
 default: all
 
-all: guessword test
+all: guessword benchmark test
 clean:
 	find $(BIN) -type f -executable -delete
 	rm -f $(OBJ)/*.o
@@ -40,6 +40,13 @@ $(OBJ)/guessword.o: $(SRC)/guessword.c | $(OBJ)
 $(BIN)/guessword.out: $(OBJ)/guessword.o | $(BIN)
 	$(GCC) $(GCC_ARGS) -pthread -o $@ $^ -lcrypt -lpthread
 guessword: $(BIN)/guessword.out
+
+# A simple program that benchmarks the number of hashes per seconds for a single thread
+$(OBJ)/benchmark.o: $(SRC)/benchmark.c | $(OBJ)
+	$(GCC) $(GCC_ARGS) -o $@ -c $<
+$(BIN)/benchmark.out: $(OBJ)/benchmark.o | $(BIN)
+	$(GCC) $(GCC_ARGS) -o $@ $^ -lcrypt
+benchmark: $(BIN)/benchmark.out
 
 # Guessword using the assignment's requirements
 $(BIN)/guessword: $(SRC)/guessword.c | $(BIN)
