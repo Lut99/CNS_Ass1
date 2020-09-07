@@ -4,7 +4,7 @@
  * Created:
  *   02/09/2020, 20:34:28
  * Last edited:
- *   05/09/2020, 22:51:11
+ *   9/7/2020, 21:59:05
  * Auto updated?
  *   Yes
  *
@@ -35,6 +35,10 @@
 #define MAX_PASSWORDS 10000000
 /* Determines the maximum length of a single password (including null-termination). */
 #define MAX_PASSWORD_LENGTH 64
+/* Determines the maximum number of long passwords stored in memory. These are combined on-the-spot to make for longer passwords. */
+#define MAX_LONG_PASSWORDS 15000
+/* Determines the maximum length of a long passwords stored in memory. */
+#define MAX_LONG_PASSWORD_LENGTH 64
 /* Determines the maximum number of salts loaded in memory at a time. */
 #define MAX_SALTS 128
 /* Determines the maximum number of characters a salt can exist of (including null-termination). */
@@ -49,6 +53,8 @@
 #define CHUNK_SIZE 512
 /* The path of the Dictionary file. */
 #define DICTIONARY_PATH "dictionary.txt"
+/* The path of the LongDictionary file. */
+#define LONG_DICTIONARY_PATH "long_dictionary.txt"
 
 
 
@@ -121,19 +127,19 @@ typedef struct THREADDATA {
     int tid;
     // Reference to the list of all passwords.
     Array* passwords;
+    // Reference to the list of all long passwords.
+    Array* long_passwords;
     // Reference to the list of all users.
     Array* users;
     // Reference to the salt used.
     char* salt;
     // The size of the salt used.
     int salt_len;
-    // The start of our assigned range of passwords.
-    unsigned long start;
-    // The end of our assigned range of passwords.
-    unsigned long stop;
     #ifdef DEBUG
     /* Lists the time that the Thread took to compute it's share of threads. */
     float elapsed;
+    /* Counts the number of hashes processed by this thread. */
+    unsigned long n_hashes;
     #endif
 } ThreadData;
 
@@ -142,19 +148,19 @@ typedef struct THREADDATA {
 /***** HELPER FUNCTIONS *****/
 
 /* Reads the given file as if it was a dictionary, and returns a Passwords struct with array size 'sizeof(char) * MAX_PASSWORDS * (MAX_PASSWORD_LENGTH + 1)'. Returns NULL if some error occurred. */
-int read_passwords(Array* passwords, FILE* dictionary_h) {
+int read_passwords(Array* passwords, FILE* dictionary_h, int max_passwords, int max_password_length) {
     // Reset the size of the passwords struct
     passwords->size = 0;
 
     // Loop and read the file
-    char buffer[MAX_PASSWORD_LENGTH];
+    char buffer[max_password_length];
     int index = 0;
     #ifdef DEBUG
     long line = 0;
     #endif
-    while(fgets(buffer, MAX_PASSWORD_LENGTH, dictionary_h) != NULL) {
+    while(fgets(buffer, max_password_length, dictionary_h) != NULL) {
         // Loop through the buffer to add
-        for (int i = 0; i < MAX_PASSWORD_LENGTH; i++) {
+        for (int i = 0; i < max_password_length; i++) {
             char c = buffer[i];
             if (c == '\n' || c == '\0') {
                 // Finish the current password with an '\0'
@@ -170,7 +176,7 @@ int read_passwords(Array* passwords, FILE* dictionary_h) {
                 #endif
                 break;
             } else {
-                if (passwords->size == MAX_PASSWORDS) {
+                if (passwords->size == max_passwords) {
                     // Password count overflow
                     #ifdef DEBUG
                     fprintf(stderr, "[WARNING] Encountered too many passwords starting from line %lu; stopping early.\n",
@@ -178,11 +184,11 @@ int read_passwords(Array* passwords, FILE* dictionary_h) {
                     #endif
                     // Still return the OK code, as it is still usable
                     return 0;
-                } else if (index == MAX_PASSWORD_LENGTH - 1) {
+                } else if (index == max_password_length - 1) {
                     // String overflow
                     #ifdef DEBUG
                     fprintf(stderr, "[WARNING] Password on line %ld is too long; splitting after %d characters.\n",
-                            line, MAX_PASSWORD_LENGTH - 1);
+                            line, max_password_length - 1);
                     #endif
                     // Move to the next field to dump the rest
                     passwords->size++;
@@ -195,7 +201,7 @@ int read_passwords(Array* passwords, FILE* dictionary_h) {
     }
 
     // Check if anything illegal occured
-    if (passwords->size < MAX_PASSWORDS && !feof(dictionary_h)) {
+    if (passwords->size < max_passwords && !feof(dictionary_h)) {
         // Stopped prematurly; we errored somehow
         fprintf(stderr, "[ERROR] Could not read from dictionary file: %s\n", strerror(errno));
         return errno;
@@ -373,8 +379,12 @@ void* thread_main(void* data) {
     Array* passwords = tdata->passwords;
     char* salt = tdata->salt;
     int salt_len = tdata->salt_len;
-    unsigned long start = tdata->start;
-    unsigned long stop = tdata->stop;
+
+    /***** PHASE 1: THE PASSWORD FILE *****/
+    // Compute the start and stop index for the normal passwords
+    int n_threads = nprocs();
+    long start = tdata->tid * (passwords->size / n_threads);
+    long stop = tdata->tid < n_threads - 1 ? (tdata->tid + 1) * (passwords->size / n_threads) - 1 : passwords->size - 1;
 
     // Start with our time measurement
     #ifdef DEBUG
@@ -385,11 +395,12 @@ void* thread_main(void* data) {
     // Go through our range to compute the hashes & compare them once computed
     struct crypt_data cdata;
     cdata.initialized = 0;
-    for (unsigned long p = start; p <= stop; p++) {
+    for (long p = start; p <= stop; p++) {
         // Compute the hash
         char* result = crypt_r(GET_CHAR(passwords, p), salt, &cdata);
         // Remove the salt bit from the result
         char* hash = result + salt_len;
+
         // Compare it with the hash we know each user has
         for (long i = 0; i < tdata->users->size; i++) {
             User* user = GET_USER(tdata->users, i);
@@ -401,12 +412,72 @@ void* thread_main(void* data) {
                 user->guessed = 1;
             }
         }
+
+        #ifdef DEBUG
+        // Keep track of what we done
+        ++tdata->n_hashes;
+        #endif
     }
 
     #ifdef DEBUG
     gettimeofday(&stop_clock, NULL);
     tdata->elapsed = ((stop_clock.tv_sec - start_clock.tv_sec) * 1000000 + (stop_clock.tv_usec - start_clock.tv_usec)) / 1000000.0;
     #endif
+
+    /***** PHASE 2: COMBINING THE LONG PASSWORDS *****/
+    // Get some newly relevant shortcuts
+    Array* long_passwords = tdata->long_passwords;
+
+    // Start by computing this thread's index for the long passwords
+    start = tdata->tid * (long_passwords->size / n_threads);
+    stop = tdata->tid < n_threads - 1 ? (tdata->tid + 1) * (long_passwords->size / n_threads) - 1 : long_passwords->size - 1;
+
+    // For all our passwords, loop through all passwords (except itself) and create a doubly long password with that
+    char buffer[MAX_LONG_PASSWORD_LENGTH * 2];
+    for (long p1 = start; p1 <= stop; p1++) {
+        // Get a reference to the first password for easiness
+        char* password1 = GET_CHAR(long_passwords, p1);
+        for (long p2 = 0; p2 < long_passwords->size; p2++) {
+            // Avoid creating a password which it twice itself
+            if (p1 == p2) { continue; }
+
+            // Get a reference to the second password for easiness
+            char* password2 = GET_CHAR(long_passwords, p2);
+
+            // Copy p1 to the buffer
+            int buffer_i = 0;
+            for (int i = 0; ; i++) {
+                if (password1[i] == '\0') { break; }
+                buffer[buffer_i++] = password1[i];
+            }
+            // Also p2
+            for (int i = 0; ; i++) {
+                buffer[buffer_i++] = password2[i];
+                if (password2[i] == '\0') { break; }
+            }
+
+            // Compute the hash of our new password
+            char* result = crypt_r(buffer, salt, &cdata);
+            char* hash = result + salt_len;
+
+            // Compare it with the hash we know each user has
+            for (long i = 0; i < tdata->users->size; i++) {
+                User* user = GET_USER(tdata->users, i);
+                if (!user->guessed && streq(hash, user->hash)) {
+                    // We have this user, so print the result
+                    fprintf(stdout, "%s:%s\n", user->username, buffer);
+                    fflush(stdout);
+                    // Mark that we guessed it
+                    user->guessed = 1;
+                }
+            }
+
+            #ifdef DEBUG
+            // Keep track of what we done
+            ++tdata->n_hashes;
+            #endif
+        }
+    }
 
     return NULL;
 }
@@ -420,17 +491,30 @@ int main(int argc, const char** argv) {
     // const char* passwd_path;
     const char* shadow_path;
     const char* dictionary_path = DICTIONARY_PATH;
-    if (argc < 3 || argc > 4) {
-        printf("Usage: %s passwd_path shadow_path [dictionary_path]\n", argv[0]);
+    const char* long_dictionary_path = LONG_DICTIONARY_PATH;
+    if (argc < 3 || argc > 5) {
+        printf("Usage: %s passwd_path shadow_path [dictionary_path [long_dictionary_path]]\n", argv[0]);
         exit(0);
     } else {
         // Actually ifnore the passwd for now, as I think everything we need to know is in the shadow file.
-        // passwd_path = argv[1];
         shadow_path = argv[2];
-        if (argc == 4) {
+        if (argc >= 4) {
             dictionary_path = argv[3];
+            if (argc >= 5) {
+                long_dictionary_path = argv[4];
+            }
         }
     }
+
+    #ifdef DEBUG
+    // Print a neat intro thing
+    fprintf(stderr, "\n*** GUESSWORD ***\n\n");
+    fprintf(stderr, "Using:\n");
+    fprintf(stderr, " - Path to shadow file                : '%s'\n", shadow_path);
+    fprintf(stderr, " - Path to dictionary file            : '%s'\n", dictionary_path);
+    fprintf(stderr, " - Path to long words dictionary file : '%s'\n", long_dictionary_path);
+    fprintf(stderr, "\n");
+    #endif
 
     // Check if the files exist by already acquiring FILE handles
     FILE* shadow_h = fopen(shadow_path, "r");
@@ -438,27 +522,52 @@ int main(int argc, const char** argv) {
         fprintf(stderr, "[ERROR] Could not open file '%s': %s\n", shadow_path, strerror(errno));
         return errno;
     }
-    // Also get a handle for the hardcoded dictionary.txt
+    // Also get a handle for the dictionary & long words dictionary
     FILE* dictionary_h = fopen(dictionary_path, "r");
     if (dictionary_h == NULL) {
         fclose(shadow_h);
         fprintf(stderr, "[ERROR] Could not open file '%s': %s\n", dictionary_path, strerror(errno));
         return errno;
     }
+    FILE* long_dictionary_h = fopen(long_dictionary_path, "r");
+    if (long_dictionary_h == NULL) {
+        fclose(shadow_h);
+        fclose(dictionary_h);
+        fprintf(stderr, "[ERROR] Could not open file '%s': %s\n", long_dictionary_path, strerror(errno));
+        return errno;
+    }
 
 
 
-    /***** Then, read the dictionary file with all the passwords. *****/
+    /***** Then, read the dictionary & long words dictionary files with all the passwords. *****/
+    // Get the normal list of passwords
     Array* passwords = Array_create(MAX_PASSWORDS, sizeof(char) * MAX_PASSWORD_LENGTH);
-    int result = read_passwords(passwords, dictionary_h);
+    int result = read_passwords(passwords, dictionary_h, MAX_PASSWORDS, MAX_PASSWORD_LENGTH);
     fclose(dictionary_h);
+    // Check if we were successful
     if (result != 0) {
         fclose(shadow_h);
+        fclose(long_dictionary_h);
         Array_destroy(passwords);
         return result;
     }
     #ifdef DEBUG
     fprintf(stderr, "[INFO] Loaded %ld passwords.\n", passwords->size);
+    #endif
+
+    // Now the list with the long passwords
+    Array* long_passwords = Array_create(MAX_LONG_PASSWORDS, sizeof(char) * MAX_LONG_PASSWORD_LENGTH);
+    fclose(long_dictionary_h);
+    result = read_passwords(long_passwords, long_dictionary_h, MAX_LONG_PASSWORDS, MAX_LONG_PASSWORD_LENGTH);
+    // Check if we were successful
+    if (result != 0) {
+        fclose(shadow_h);
+        Array_destroy(passwords);
+        Array_destroy(long_passwords);
+        return result;
+    }
+    #ifdef DEBUG
+    fprintf(stderr, "[INFO] Loaded %ld long passwords.\n", passwords->size);
     #endif
 
 
@@ -474,6 +583,7 @@ int main(int argc, const char** argv) {
         // Something bad happened; cleanup and return
         fclose(shadow_h);
         Array_destroy(passwords);
+        Array_destroy(long_passwords);
         Array_destroy(users);
         return result;
     }
@@ -498,11 +608,10 @@ int main(int argc, const char** argv) {
         // First, we populate the ThreadData struct
         threads[i].tid = i;
         threads[i].passwords = passwords;
+        threads[i].long_passwords = long_passwords;
         threads[i].salt = salt;
         threads[i].salt_len = strlen(salt);
         threads[i].users = users;
-        threads[i].start = i * (passwords->size / n_threads);
-        threads[i].stop = i < n_threads - 1 ? (i + 1) * (passwords->size / n_threads) - 1 : passwords->size - 1;
 
         // Spawn the thread
         pthread_create(&threads[i].tdata, NULL, thread_main, (void*) &threads[i]);
@@ -515,10 +624,10 @@ int main(int argc, const char** argv) {
     for (int i = 0; i < n_threads; i++) {
         pthread_join(threads[i].tdata, NULL);
         #ifdef DEBUG
-        float hashes_per_second = ((threads[i].stop + 1) - threads[i].start) / threads[i].elapsed;
+        float hashes_per_second = (threads[i].n_hashes) / threads[i].elapsed;
         if (i == 0) { fprintf(stderr, "\n"); }
         fprintf(stderr, "[INFO] Thread %d computed %lu hashes in %fs = %f hashes/s.\n",
-                threads[i].tid, (threads[i].stop + 1) - threads[i].start, threads[i].elapsed,
+                threads[i].tid, threads[i].n_hashes, threads[i].elapsed,
                 hashes_per_second);
         total_hps += hashes_per_second;
         #endif
@@ -537,6 +646,7 @@ int main(int argc, const char** argv) {
 
     // Deallocate the heap memory
     Array_destroy(passwords);
+    Array_destroy(long_passwords);
     Array_destroy(users);
 
     /* Done! */

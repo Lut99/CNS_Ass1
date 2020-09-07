@@ -4,7 +4,7 @@
 # Created:
 #   02/09/2020, 20:50:33
 # Last edited:
-#   02/09/2020, 22:02:43
+#   9/7/2020, 21:35:07
 # Auto updated?
 #   Yes
 #
@@ -17,6 +17,9 @@
 import argparse
 import os
 import re
+
+
+MIN_LENGTH = 9
 
 
 letter_map = {
@@ -74,7 +77,7 @@ def clean(word):
     return pattern.sub('', word)
 
 
-def main(dicts, output):
+def main(dicts, output, long_output):
     print("\n*** DICTIONARY GENERATOR ***\n")
     print("Dictionaries to collect:")
     for d in dicts:
@@ -105,34 +108,40 @@ def main(dicts, output):
     print("Applying mutations...")
     complete_words = set()
     j = 1
-    for word in words:
-        complete_words.add(word)
+    with open(long_output, "w") as f:
+        for word in words:
+            complete_words.add(word)
 
-        # Mutation 1: Replace each letter by a capital (and once all caps)
-        for i in range(len(word)):
-            complete_words.add(word[:i] + word[i].upper() + word[i + 1:])
-        complete_words.add(word.upper())
-        
-        # Mutation 2: Replace certain letters with words
-        for i in range(len(word)):
-            letter = word[i]
-            if letter in letter_map:
-                letter = letter_map[letter]
-            if type(letter) == list:
-                for l in letter:
-                    complete_words.add(word[:i] + l + word[i + 1:])
-            else:
-                complete_words.add(word[:i] + letter + word[i + 1:])
-        
-        # Mutation 3: Add all years between 1970-2000 as years and their '97 form
-        complete_words.add(word + "2000")
-        complete_words.add(word + "00")
-        for year in range(70, 100):
-            complete_words.add(word + f"19{year}")
-            complete_words.add(word + f"{year}")
+            print(f"   (Word {j}/{len(words)})", end="\r")
 
-        print(f"   (Word {j}/{len(words)})", end="\r")
-        j += 1
+            # Mutation 1: Replace each letter by a capital (and once all caps)
+            for i in range(len(word)):
+                complete_words.add(word[:i] + word[i].upper() + word[i + 1:])
+            complete_words.add(word.upper())
+            
+            # Mutation 2: Replace certain letters with words
+            for i in range(len(word)):
+                letter = word[i]
+                if letter in letter_map:
+                    letter = letter_map[letter]
+                if type(letter) == list:
+                    for l in letter:
+                        complete_words.add(word[:i] + l + word[i + 1:])
+                else:
+                    complete_words.add(word[:i] + letter + word[i + 1:])
+            
+            # Mutation 3: Add all years between 1970-2000 as years and their '97 form
+            complete_words.add(word + "2000")
+            complete_words.add(word + "00")
+            for year in range(70, 100):
+                complete_words.add(word + f"19{year}")
+                complete_words.add(word + f"{year}")
+
+            # Mutation 4: Add this word of MIN_LENGTH to the long_output file so guessword can try those
+            if len(word) >= MIN_LENGTH:
+                f.write(word + "\n")
+
+            j += 1
     
     # Mutation 5: Finally, generate a set of all birthdays between 1970 and 2000
     for year in range(1970, 2001):
@@ -167,7 +176,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("-d", "--dict", nargs='+', help="Used to specify a single directory. Can be specified multiple times to add more than one dictionary file.")
-    parser.add_argument("-o", "--output", help="The path to the output file.")
+    parser.add_argument("-1", "--output", help="The path to the output file.")
+    parser.add_argument("-2", "--long-output", help="The path to the file with the long names.")
 
     args = parser.parse_args()
 
@@ -178,4 +188,4 @@ if __name__ == "__main__":
         if len([d for d in args.dict if d == f]) > 1:
             raise ValueError(f"Given dictionary '{f}' occurs more than once.")
 
-    exit(main(args.dict, args.output))
+    exit(main(args.dict, args.output, args.long_output))
