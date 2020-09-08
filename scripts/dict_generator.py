@@ -4,7 +4,7 @@
 # Created:
 #   02/09/2020, 20:50:33
 # Last edited:
-#   9/7/2020, 21:35:07
+#   9/8/2020, 14:43:56
 # Auto updated?
 #   Yes
 #
@@ -77,7 +77,7 @@ def clean(word):
     return pattern.sub('', word)
 
 
-def main(dicts, output, long_output):
+def main(dicts, output):
     print("\n*** DICTIONARY GENERATOR ***\n")
     print("Dictionaries to collect:")
     for d in dicts:
@@ -105,64 +105,64 @@ def main(dicts, output, long_output):
         i += 1
     print(f"Done, read {len(words)} passwords\n")
 
-    print("Applying mutations...")
-    complete_words = set()
-    j = 1
-    with open(long_output, "w") as f:
-        for word in words:
-            complete_words.add(word)
+    # print("Applying mutations...")
+    # complete_words = set()
+    # j = 1
+    # with open(long_output, "w") as f:
+    #     for word in words:
+    #         complete_words.add(word)
 
-            print(f"   (Word {j}/{len(words)})", end="\r")
+    #         print(f"   (Word {j}/{len(words)})", end="\r")
 
-            # Mutation 1: Replace each letter by a capital (and once all caps)
-            for i in range(len(word)):
-                complete_words.add(word[:i] + word[i].upper() + word[i + 1:])
-            complete_words.add(word.upper())
+    #         # Mutation 1: Replace each letter by a capital (and once all caps)
+    #         for i in range(len(word)):
+    #             complete_words.add(word[:i] + word[i].upper() + word[i + 1:])
+    #         complete_words.add(word.upper())
             
-            # Mutation 2: Replace certain letters with words
-            for i in range(len(word)):
-                letter = word[i]
-                if letter in letter_map:
-                    letter = letter_map[letter]
-                if type(letter) == list:
-                    for l in letter:
-                        complete_words.add(word[:i] + l + word[i + 1:])
-                else:
-                    complete_words.add(word[:i] + letter + word[i + 1:])
+    #         # Mutation 2: Replace certain letters with words
+    #         for i in range(len(word)):
+    #             letter = word[i]
+    #             if letter in letter_map:
+    #                 letter = letter_map[letter]
+    #             if type(letter) == list:
+    #                 for l in letter:
+    #                     complete_words.add(word[:i] + l + word[i + 1:])
+    #             else:
+    #                 complete_words.add(word[:i] + letter + word[i + 1:])
             
-            # Mutation 3: Add all years between 1970-2000 as years and their '97 form
-            complete_words.add(word + "2000")
-            complete_words.add(word + "00")
-            for year in range(70, 100):
-                complete_words.add(word + f"19{year}")
-                complete_words.add(word + f"{year}")
+    #         # Mutation 3: Add all years between 1970-2000 as years and their '97 form
+    #         complete_words.add(word + "2000")
+    #         complete_words.add(word + "00")
+    #         for year in range(70, 100):
+    #             complete_words.add(word + f"19{year}")
+    #             complete_words.add(word + f"{year}")
 
-            # Mutation 4: Add this word of MIN_LENGTH to the long_output file so guessword can try those
-            if len(word) >= MIN_LENGTH:
-                f.write(word + "\n")
+    #         # Mutation 4: Add this word of MIN_LENGTH to the long_output file so guessword can try those
+    #         if len(word) >= MIN_LENGTH:
+    #             f.write(word + "\n")
 
-            j += 1
+    #         j += 1
     
-    # Mutation 5: Finally, generate a set of all birthdays between 1970 and 2000
-    for year in range(1970, 2001):
-        for month in range(1, 13):
-            for day in range(1, (29 if (month == 2 and year % 4 and year != 2000) else month_map[month]) + 1):
-                if (month == 2 and year % 4 and year != 2000):
-                    day += 1
-                complete_words.add(f"{day:02}{month:02}{year}")
-                complete_words.add(f"{day:02}{month:02}{str(year)[-2:]}")
-                complete_words.add(f"{month:02}{day:02}{year}")
-                complete_words.add(f"{month:02}{day:02}{str(year)[-2:]}")
-                complete_words.add(f"{day}{month}{year}")
-                complete_words.add(f"{day}{month}{str(year)[-2:]}")
-                complete_words.add(f"{month}{day}{year}")
-                complete_words.add(f"{month}{day}{str(year)[-2:]}")
+    # # Mutation 5: Finally, generate a set of all birthdays between 1970 and 2000
+    # for year in range(1970, 2001):
+    #     for month in range(1, 13):
+    #         for day in range(1, (29 if (month == 2 and year % 4 and year != 2000) else month_map[month]) + 1):
+    #             if (month == 2 and year % 4 and year != 2000):
+    #                 day += 1
+    #             complete_words.add(f"{day:02}{month:02}{year}")
+    #             complete_words.add(f"{day:02}{month:02}{str(year)[-2:]}")
+    #             complete_words.add(f"{month:02}{day:02}{year}")
+    #             complete_words.add(f"{month:02}{day:02}{str(year)[-2:]}")
+    #             complete_words.add(f"{day}{month}{year}")
+    #             complete_words.add(f"{day}{month}{str(year)[-2:]}")
+    #             complete_words.add(f"{month}{day}{year}")
+    #             complete_words.add(f"{month}{day}{str(year)[-2:]}")
 
-    print(f"\nDone, mutated to {len(complete_words)} passwords\n")
+    # print(f"\nDone, mutated to {len(complete_words)} passwords\n")
 
     print("Writing to file...")
     with open(output, "w") as f:
-        for w in complete_words:
+        for w in words:
             f.write(w + "\n")
     print("Done\n")
 
@@ -176,8 +176,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("-d", "--dict", nargs='+', help="Used to specify a single directory. Can be specified multiple times to add more than one dictionary file.")
-    parser.add_argument("-1", "--output", help="The path to the output file.")
-    parser.add_argument("-2", "--long-output", help="The path to the file with the long names.")
+    parser.add_argument("-o", "--output", help="The path to the output file.")
 
     args = parser.parse_args()
 
@@ -188,4 +187,4 @@ if __name__ == "__main__":
         if len([d for d in args.dict if d == f]) > 1:
             raise ValueError(f"Given dictionary '{f}' occurs more than once.")
 
-    exit(main(args.dict, args.output, args.long_output))
+    exit(main(args.dict, args.output))

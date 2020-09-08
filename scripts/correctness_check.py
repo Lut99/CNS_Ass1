@@ -4,7 +4,7 @@
 # Created:
 #   05/09/2020, 21:17:59
 # Last edited:
-#   05/09/2020, 23:00:03
+#   9/8/2020, 13:43:44
 # Auto updated?
 #   Yes
 #
@@ -17,6 +17,7 @@ import argparse
 import os
 import sys
 import subprocess
+import time
 
 
 DEFAULT_EXEC_PATH = "bin/guessword.out data/training-passwd.txt data/training-shadow.txt"
@@ -30,9 +31,9 @@ def main(exec_cmd, gold_path, benchmark_cmd):
     print("\n*** GUESSWORD CORRECTNESS TEST ***\n")
 
     print("Using:")
-    print(f" - Command to run guessword  : '{exec_cmd}'")
-    print(f" - Path to golden standard   : '{gold_path}'")
-    print(f" - Using benchmark for grade ? {'no' if benchmark_cmd == None else 'yes'}")
+    print(f" - Command to run guessword    : '{exec_cmd}'")
+    print(f" - Path to golden standard     : '{gold_path}'")
+    print(f" - Using benchmark for grade   ? {'no' if benchmark_cmd is None else 'yes'}")
     if benchmark_cmd is not None:
         print(f"    - Command to run benchmark : '{benchmark_cmd}'")
     print("")
@@ -51,7 +52,7 @@ def main(exec_cmd, gold_path, benchmark_cmd):
         if hashes_per_second == None:
             print(f"\nERROR: Failed to extract time from benchmark result.", file=sys.stderr)
             exit(-1)
-        print(f" Done ({hashes_per_second} hash/s)")
+        print(f" Done ({hashes_per_second} hashes/s)")
     
     # Find guessword's command with timeout, possibly
     command = exec_cmd.split(" ")
@@ -60,8 +61,11 @@ def main(exec_cmd, gold_path, benchmark_cmd):
         command = ["timeout", f"{GRADE_MACHINE_TIMEOUT * ((GRADE_MACHINE_HPS * GRADE_MACHINE_CORES) / hashes_per_second)}s"] + command
     # Then, run the guessword exec
     print(f"Running '{' '.join(command)}'...", end=""); sys.stdout.flush()
+    start = time.time()
     res = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if (res.returncode != 0):
+    end = time.time()
+    # Error if not success and not timeout
+    if (res.returncode != 0 and res.returncode != 124):
         print(f"\nERROR: Failed to run '{' '.join(command)}' (return status {res.returncode}):\n{res.stderr.decode('utf-8')}", file=sys.stderr)
         exit(-1)
     results = res.stdout.decode("utf-8").split("\n")
@@ -80,11 +84,14 @@ def main(exec_cmd, gold_path, benchmark_cmd):
         if result in gold:
             correct += 1
     print("Results:")
-    print(f" - Correct: {correct} ({correct / len(results) * 100:.2f}%)")
-    print(f" - Guessed: {len(results)}/{len(gold)}")
-    print(f" - Overall: {correct / len(gold) * 100:.2f}%")
+    print(f" - Correct       : {correct} ({correct / len(results) * 100:.2f}%)")
+    print(f" - Guessed       : {len(results)}/{len(gold)}")
+    print(f" - Overall       : {correct / len(gold) * 100:.2f}%")
     # If given, compute the expected grade as well
     if benchmark_cmd is not None:
+        # Show the duration VS the maximum duration
+        print(f" - Duration      : {end - start:.2f}s")
+        print(f" - Time usage    : {(end - start) / (GRADE_MACHINE_TIMEOUT * ((GRADE_MACHINE_HPS * GRADE_MACHINE_CORES) / hashes_per_second)) * 100:.2f}%")
         # Compute the grade
         print(f">> Expected grade: {1 + 9 * ((correct - (len(results) - correct)) / len(gold)):.2f} <<")
     print("")
@@ -110,10 +117,11 @@ if __name__ == "__main__":
     if not os.path.isfile(path) or not os.access(path, os.X_OK):
         print(f"[ERROR] Given path to guessword '{path}' does not point to an executable file.", file=sys.stderr)
         exit(-1)
-    path = args.benchmark if args.benchmark.find(" ") == -1 else args.benchmark[:args.benchmark.find(" ")]
-    if args.benchmark is not None and (not os.path.isfile(path) or not os.access(path, os.X_OK)):
-        print(f"[ERROR] Given path to benchmark '{path}' does not point to an executable file.", file=sys.stderr)
-        exit(-1)
+    if args.benchmark is not None:
+        path = args.benchmark if args.benchmark.find(" ") == -1 else args.benchmark[:args.benchmark.find(" ")]
+        if not os.path.isfile(path) or not os.access(path, os.X_OK):
+            print(f"[ERROR] Given path to benchmark '{path}' does not point to an executable file.", file=sys.stderr)
+            exit(-1)
     
     # Run main
     exit(main(args.exec, args.gold, args.benchmark))
