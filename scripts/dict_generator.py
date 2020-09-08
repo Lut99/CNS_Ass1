@@ -1,10 +1,10 @@
 # DICT GENERATOR.py
-#   by HACKER_HANDLE
+#   by DukeD1rtfarm3r
 #
 # Created:
 #   02/09/2020, 20:50:33
 # Last edited:
-#   9/8/2020, 14:43:56
+#   08/09/2020, 17:02:05
 # Auto updated?
 #   Yes
 #

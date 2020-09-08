@@ -1,5 +1,5 @@
 # GUESSWORD - MAKEFILE
-#   by HACKER_HANDLE
+#   by DukeD1rtfarm3r
 #
 # A Makefile to simplify compilation (and subsequent cleanup) of guessword.c.
 #

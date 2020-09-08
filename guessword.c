@@ -1,10 +1,10 @@
 /* GUESSWORD.c
- *   by Duk3.D1rtfarm3r
+ *   by DukeD1rtfarm3r
  *
  * Created:
  *   02/09/2020, 20:34:28
  * Last edited:
- *   9/8/2020, 16:54:55
+ *   08/09/2020, 17:01:49
  * Auto updated?
  *   Yes
  *
