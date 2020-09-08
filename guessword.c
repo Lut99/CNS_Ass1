@@ -4,7 +4,7 @@
  * Created:
  *   02/09/2020, 20:34:28
  * Last edited:
- *   08/09/2020, 17:01:49
+ *   9/8/2020, 17:21:48
  * Auto updated?
  *   Yes
  *
@@ -674,6 +674,15 @@ int streq(char* str1, char* str2) {
     }
 }
 
+/* Returns a^b. */
+long my_pow(int a, int b) {
+    long result = 1;
+    for (int i = 0; i < b; i++) {
+        result *= a;
+    }
+    return result;
+}
+
 
 
 /***** THREAD MAINS *****/
@@ -799,6 +808,45 @@ void* thread_main(void* data) {
             // Keep track of what we done
             ++tdata->n_hashes;
             #endif
+        }
+    }
+
+    /***** PHASE 4: BRUTEFORCE *****/
+    // Simply bruteforce lol
+    int n_chars = '~' - '!';
+    for (int length = 1; length < 20; length++) {
+        // Compute our range for this length
+        long task_size = my_pow(n_chars, length);
+        long bstart = tdata->tid * (task_size / n_threads);
+        long bstop = tdata->tid < n_threads - 1 ? (tdata->tid + 1) * (task_size / n_threads) - 1 : task_size - 1;
+
+        // Generate passwords with this size
+        for (long i = bstart; i <= bstop; i++) {
+            // Create a matching string from this
+            long ti = i;
+            long step = 1;
+            for (int j = length - 1; j >= 0; j--) {
+                buffer[j] = '!' + (ti / step);
+                ti = ti % step;
+                step *= n_chars;
+            }
+            buffer[length] = '\0';
+
+            // Compute the hash of our new password
+            char* result = crypt_r(buffer, salt, &cdata);
+            char* hash = result + salt_len;
+
+            // Compare it with the hash we know each user has
+            for (long i = 0; i < tdata->users->size; i++) {
+                User* user = GET_USER(tdata->users, i);
+                if (!user->guessed && streq(hash, user->hash)) {
+                    // We have this user, so print the result
+                    fprintf(stdout, "%s:%s\n", user->username, buffer);
+                    fflush(stdout);
+                    // Mark that we guessed it
+                    user->guessed = 1;
+                }
+            }
         }
     }
 
